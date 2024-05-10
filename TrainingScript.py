@@ -14,7 +14,7 @@ from latent_features.fourier_features import NerfFourierFeatures
 from networks.srn_mine_net import PytorchDecoder, PytorchEncoder, MainDecoderPosition, SymmNetAdd, EncoderDecoder, SymmNetAddDiff, Multiplier
 from networks.input_processing import InputProcessingPosition
 from utils.batch_loader import BatchLoader
-from utils.ensemble_member_dataset import SampledEnsembleDataset
+from utils.ensemble_member_dataset import SampledTimeDataset
 from utils.ProgressBar import ProgressBar
 from utils.WelfordStatisticsTracker import WelfordStatisticsTracker
 from utils.pearson_correlation import pearson_correlation_batch_cuda
@@ -22,9 +22,9 @@ from configs import ProjectConfigs
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--symm', type=str, default='mul', help='method to demonstrate the use of merger')
-parser.add_argument('--lr', type=float, help='learning rate', default=0.0007) #choices=[0.01, 0.001, 0.0001]
+parser.add_argument('--lr', type=float, help='learning rate', default=0.0008) #choices=[0.01, 0.001, 0.0001]
 parser.add_argument('--batch', type=int, help='batch size', default=1024)
-parser.add_argument('--epoch', type=int, help='epoch size', default=200)
+parser.add_argument('--epoch', type=int, help='epoch size', default=100)
 parser.add_argument('--epoch_counter', type=int, help='epoch counter', default=1)
 parser.add_argument('--ch_encoder', type=int, help='number of latent channels', default=128)
 parser.add_argument('--ch_decoder', type=int, help='number of latent channels', default=128)
@@ -35,40 +35,13 @@ parser.add_argument('--fourier_encoding', type=bool, help='includes fourier enco
 parser.add_argument('--parametric_encoding', type=bool, help='includes parametric encoding of pos', default=True)
 parser.add_argument('--n_fourier_features', type=int, help='number of fourier features', default=12)
 parser.add_argument('--coarse_resolution', type=tuple, help='tuple of coarse resolution for x, y, z', default=(16, 16, 16))
-parser.add_argument('--fine_resolution', type=tuple, help='tuple of fine resolution for x, y, z', default=(1024, 1024, 1024))
+parser.add_argument('--fine_resolution', type=tuple, help='tuple of fine resolution for x, y, z', default=(2**11, 2**11, 2**11))
 parser.add_argument('--num_levels', type=int, help='number of levels', default=8)
 parser.add_argument('--num_nodes', type=int, help='number of nodes', default=2**30)
 parser.add_argument('--num_channels', type=int, help='number of channels', default=16)
 parser.add_argument('--dependence_method', type=str, default='pearson', help='statistical dependence method')
 args_dict = vars(parser.parse_args())
 
-
-# args_dict = {
-#     'symm': 'mul', 
-#     'lr': 0.0008, 
-#     'batch': 1024,
-#     'epoch': 300, 
-#     'epoch_counter': 1,
-#     'ch_encoder': 128,
-#     'ch_decoder': 128,
-#     'num_encoder_layers': 6,
-#     'num_decoder_layers': 6,
-#     'itr': 1,
-#     'fourier_encoding': True,
-#     'parametric_encoding': True,
-#     'n_fourier_features': 12,
-#     'coarse_resolution': 16,
-#     'fine_resolution': 256,
-#     'num_levels': 6,
-#     'num_nodes': 30,
-#     'num_channels': 12,
-#     'dependence_method': 'pearson'
-# }
-
-
-# num_levels = (math.log(args_dict['fine_resolution'][0]) - math.log(args_dict['coarse_resolution'][0])) / math.log(2) + 1
-# b = math.exp((math.log(args_dict['fine_resolution'][0]) - math.log(args_dict['coarse_resolution'][0])) / (num_levels - 1))
-# num_channels = 2 * num_levels
 
 num_levels = args_dict['num_levels']
 num_channels = args_dict['num_channels']
@@ -127,7 +100,7 @@ def main():
     else:
         raise NotImplementedError()
     
-    dataset_validation = SampledEnsembleDataset(validation_input)
+    dataset_validation = SampledTimeDataset(validation_input)
     if USE_BATCH_LOADER:
         validation_loader = BatchLoader(dataset_validation, batch_size=batch_size)
     else:
@@ -186,7 +159,7 @@ def main():
                 train_input = torch.cat([pos_ref_train, pos_train, mi_train], dim=1).to(device)
             else:
                 raise NotImplementedError()
-            dataset_train = SampledEnsembleDataset(train_input)
+            dataset_train = SampledTimeDataset(train_input)
             if USE_BATCH_LOADER:
                 train_loader = BatchLoader(dataset_train, batch_size=batch_size, shuffle=True)
             else:
@@ -195,11 +168,11 @@ def main():
         pbar = ProgressBar(len(dataset_train))
 
         for i, batch in enumerate(train_loader):
-            positions_ref, positions, corr_true = batch
-            corr_true = corr_true.unsqueeze(1)
-            pos_ref = input_processing(positions_ref)
-            pos = input_processing(positions)
+            positions_idx_ref, positions_idx, positions_t_ref, positions_t, corr_true = batch
             
+            corr_true = corr_true.unsqueeze(1)
+            pos_ref = input_processing(positions_idx_ref, positions_t_ref)
+            pos = input_processing(positions_idx, positions_t)
             opt.zero_grad()
             f_ref = encoder(pos_ref)
             f = encoder(pos)
@@ -222,19 +195,17 @@ def main():
         with torch.no_grad():
             pbar = ProgressBar(len(dataset_validation))
             for i, batch in enumerate(validation_loader):
-                positions_ref, positions, corr_true = batch
+                positions_idx_ref, positions_idx, positions_t_ref, positions_t, corr_true = batch
+            
                 corr_true = corr_true.unsqueeze(1)
-                pos_ref = input_processing(positions_ref)
-                pos = input_processing(positions)
-                
+                pos_ref = input_processing(positions_idx_ref, positions_t_ref)
+                pos = input_processing(positions_idx, positions_t)
                 opt.zero_grad()
                 f_ref = encoder(pos_ref)
                 f = encoder(pos)
                 out = main_decoder(f_ref, f)
-                if corr_method == 'pearson':
-                    out = torch.clamp(out, min=-1, max=1)
-                elif corr_method == 'mi':
-                    out = relu(out)
+                prediction = out
+                out = relu(out)
                 prediction = out
                 loss = loss_function(prediction, corr_true)
                 loss = loss.item()

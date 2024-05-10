@@ -32,49 +32,34 @@ class InputProcessing(nn.Module):
         inputs = torch.cat(inputs_list, dim=-1)
         return inputs
 
-class InputProcessingPosition(nn.Module):
+class InputProcessingTime(nn.Module):
 
-    def __init__(self, fourier_module, 
-                        latent_feature_module, fourier_encoding=True, parametric_encoding= True):
-        super(InputProcessingPosition, self).__init__()
-        self.fourier_module = fourier_module
+    def __init__(self, fourier_feature_module, latent_feature_module, embedding_module,
+                        parametric_encoding=True, fourier_encoding=True, embedding_encoding=True, mul=True):
+        super(InputProcessingTime, self).__init__()
+        self.fourier_feature_module = fourier_feature_module
+        self.embedding_module = embedding_module
         self.latent_feature_module = latent_feature_module
         self.fourier_encoding = fourier_encoding
+        self.embedding_encoding = embedding_encoding
         self.parametric_encoding = parametric_encoding
+        self.mul = mul
 
-    def forward(self, pos):
-        
+    def forward(self, pos_idx, pos_t):
+        fourier_encoding = self.fourier_feature_module(pos_t)
+        embedding_encoding = self.embedding_module(pos_idx.int()).squeeze()
+        trainable_encoding = self.latent_feature_module(pos_t)
         if self.fourier_encoding:
-            if self.parametric_encoding:
-                encoding = self.fourier_module(pos)
-                trainable_encoding = self.latent_feature_module(pos)
-                inputs_list = [pos, encoding.to(device), trainable_encoding]
-                inputs = torch.cat(inputs_list, dim=-1)
-            else:
-                encoding = self.fourier_module(pos)
-                inputs_list = [pos, encoding.to(device)]
-                inputs = torch.cat(inputs_list, dim=-1)
+            t_encoding = torch.cat([fourier_encoding.to(device), trainable_encoding], dim=-1)
         else:
-            inputs = pos        
+            t_encoding = trainable_encoding
         
-        return inputs
-
-class InputProcessingPositionfou(nn.Module):
-
-    def __init__(self, fourier_module, 
-                        fourier_encoding=True):
-        super(InputProcessingPositionfou, self).__init__()
-        self.fourier_module = fourier_module
-        self.fourier_encoding = fourier_encoding
-
-    def forward(self, pos):
-        
-        if self.fourier_encoding:
-                encoding = self.fourier_module(pos)
-                # inputs_list = [pos, encoding.to('cuda')]
-                inputs_list = [pos, encoding]
-                inputs = torch.cat(inputs_list, dim=-1)
+        if self.mul:
+            pos_encodings = embedding_encoding * t_encoding
         else:
-            inputs = pos        
+            pos_encodings = torch.cat([embedding_encoding, t_encoding], dim=-1)
+        
+        inputs_list = [pos_idx, pos_t , pos_encodings]
+        inputs = torch.cat(inputs_list, dim=-1)
         
         return inputs
